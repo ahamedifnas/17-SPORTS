@@ -1,0 +1,21 @@
+{
+  "name": "z17-sports-api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc --noEmit",
+    "d1:local": "wrangler d1 migrations apply z17-sports-db --local",
+    "d1:migrate": "wrangler d1 migrations apply z17-sports-db --remote",
+    "test:d1": "node ../scripts/test-worker-d1.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.0.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261125.1",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.168.0"
+  }
+}

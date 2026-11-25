@@ -1,0 +1,226 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createProduct = exports.saveExpense = exports.recordPayment = exports.saveStaff = exports.recordAccountPayment = exports.closeCashShift = exports.voidSale = exports.completeSalesReturn = exports.completePurchaseReturn = exports.receivePurchase = exports.createPurchase = exports.updateProductDetails = exports.getSalesPage = exports.adjustStock = exports.getPosCatalog = exports.beginOfflineSession = exports.completeSale = void 0;
+const app_1 = require("firebase-admin/app");
+const auth_1 = require("firebase-admin/auth");
+const firestore_1 = require("firebase-admin/firestore");
+const https_1 = require("firebase-functions/v2/https");
+(0, app_1.initializeApp)();
+const db = (0, firestore_1.getFirestore)();
+const integer = (value) => typeof value === 'number' && Number.isSafeInteger(value);
+var checkout_js_1 = require("./checkout.js");
+Object.defineProperty(exports, "completeSale", { enumerable: true, get: function () { return checkout_js_1.completeSale; } });
+Object.defineProperty(exports, "beginOfflineSession", { enumerable: true, get: function () { return checkout_js_1.beginOfflineSession; } });
+Object.defineProperty(exports, "getPosCatalog", { enumerable: true, get: function () { return checkout_js_1.getPosCatalog; } });
+Object.defineProperty(exports, "adjustStock", { enumerable: true, get: function () { return checkout_js_1.adjustStock; } });
+Object.defineProperty(exports, "getSalesPage", { enumerable: true, get: function () { return checkout_js_1.getSalesPage; } });
+Object.defineProperty(exports, "updateProductDetails", { enumerable: true, get: function () { return checkout_js_1.updateProductDetails; } });
+async function operationalUser(uid, roles) {
+    const snapshot = await db.doc(`users/${uid}`).get(), user = snapshot.data();
+    if (!user || user.status !== 'active' || !roles.includes(user.role))
+        throw new https_1.HttpsError('permission-denied', 'Your account cannot perform this operation.');
+    return user;
+}
+exports.createPurchase = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Sign in is required.');
+    const user = await operationalUser(request.auth.uid, ['admin', 'manager', 'inventory', 'accountant']), data = request.data;
+    if (data.items?.length > 100 || new Set(data.items?.map(i => i.productId + ':' + (i.variantId || ''))).size !== data.items?.length)
+        throw new https_1.HttpsError('invalid-argument', 'Duplicate or excessive purchase lines.');
+    if (!data.supplierName?.trim() || !data.referenceNumber?.trim() || !['draft', 'received'].includes(data.status) || !Array.isArray(data.items) || !data.items.length)
+        throw new https_1.HttpsError('invalid-argument', 'Purchase details are incomplete.');
+    data.items.forEach(item => { if (!item.productId || !integer(item.quantity) || item.quantity < 1 || !integer(item.costPrice) || item.costPrice < 0 || !integer(item.discount) || item.discount < 0 || item.discount > item.costPrice * item.quantity)
+        throw new https_1.HttpsError('invalid-argument', 'A purchase item is invalid.'); });
+    const year = new Date().getUTCFullYear();
+    return db.runTransaction(async (tx) => {
+        const counterRef = db.doc(`counters/purchase-${year}`), counter = await tx.get(counterRef), sequence = (counter.data()?.value ?? 0) + 1, purchaseNumber = `PUR-${year}-${String(sequence).padStart(6, '0')}`;
+        const refs = data.items.map(item => db.doc(`products/${item.productId}`)), snaps = await Promise.all(refs.map(ref => tx.get(ref))), productCache = new Map(snaps.map(s => [s.id, s.data()]));
+        const items = data.items.map((item, index) => { const snap = snaps[index]; if (!snap.exists)
+            throw new https_1.HttpsError('not-found', 'A selected product no longer exists.'); const product = snap.data(); if (product.branchId !== user.branchId)
+            throw new https_1.HttpsError('permission-denied', 'Cross-branch purchase rejected.'); if (!item.variantId && product.variants?.length)
+            throw new https_1.HttpsError('invalid-argument', 'Select a variant.'); const variant = item.variantId ? (product.variants ?? []).find((entry) => entry.id === item.variantId) : undefined; return { ...item, productName: product.name, sku: variant?.sku ?? product.sku, lineTotal: Math.max(0, item.quantity * item.costPrice - item.discount) }; });
+        const subtotal = items.reduce((sum, item) => sum + item.quantity * item.costPrice, 0), discount = items.reduce((sum, item) => sum + item.discount, 0), tax = 0, grandTotal = subtotal - discount, purchaseRef = db.collection('purchases').doc();
+        if (data.status === 'received' && data.supplierId) {
+            const supplierRef = db.doc(`suppliers/${data.supplierId}`), supplier = await tx.get(supplierRef);
+            if (!supplier.exists || supplier.data().branchId !== user.branchId)
+                throw new https_1.HttpsError('not-found', 'Supplier not found in this branch.');
+            tx.update(supplierRef, { currentBalance: firestore_1.FieldValue.increment(grandTotal), updatedBy: request.auth.uid, updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        }
+        if (data.status === 'received')
+            items.forEach((item, index) => {
+                const product = productCache.get(item.productId), before = item.variantId ? (product.variants ?? []).find((entry) => entry.id === item.variantId)?.stock ?? 0 : product.stock ?? 0;
+                if (item.variantId) {
+                    const variants = [...(product.variants ?? [])], variantIndex = variants.findIndex((entry) => entry.id === item.variantId);
+                    if (variantIndex < 0)
+                        throw new https_1.HttpsError('not-found', 'Product variant no longer exists.');
+                    variants[variantIndex] = { ...variants[variantIndex], stock: before + item.quantity, buyingPrice: item.costPrice };
+                    product.variants = variants;
+                    const totalStock = (product.stock ?? 0) + item.quantity, newAverage = totalStock ? Math.round(((product.stock ?? 0) * (product.averageCost ?? product.buyingPrice ?? 0) + item.quantity * item.costPrice) / totalStock) : item.costPrice;
+                    product.stock = totalStock;
+                    product.averageCost = newAverage;
+                    tx.update(refs[index], { variants, stock: totalStock, buyingPrice: item.costPrice, averageCost: newAverage, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+                }
+                else {
+                    const after = before + item.quantity, newAverage = after ? Math.round((before * (product.averageCost ?? product.buyingPrice ?? 0) + item.quantity * item.costPrice) / after) : item.costPrice;
+                    product.stock = after;
+                    product.averageCost = newAverage;
+                    tx.update(refs[index], { stock: after, buyingPrice: item.costPrice, averageCost: newAverage, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+                }
+                tx.set(db.collection('stockMovements').doc(), { branchId: user.branchId, productId: item.productId, variantId: item.variantId ?? null, type: 'purchase', quantity: item.quantity, beforeStock: before, afterStock: before + item.quantity, referenceId: purchaseRef.id, createdBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp() });
+            });
+        tx.set(counterRef, { value: sequence, updatedAt: firestore_1.FieldValue.serverTimestamp() }, { merge: true });
+        tx.set(purchaseRef, { branchId: user.branchId, purchaseNumber, supplierId: data.supplierId ?? null, supplierName: data.supplierName.trim(), referenceNumber: data.referenceNumber.trim(), purchaseDate: data.purchaseDate, paymentMethod: data.paymentMethod, notes: data.notes?.trim() ?? '', items, subtotal, discount, tax, grandTotal, status: data.status, createdBy: request.auth.uid, updatedBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        items.forEach(item => tx.set(db.collection('purchaseItems').doc(), { branchId: user.branchId, purchaseId: purchaseRef.id, purchaseNumber, ...item, createdAt: firestore_1.FieldValue.serverTimestamp() }));
+        tx.set(db.collection('auditLogs').doc(), { branchId: user.branchId, userId: request.auth.uid, userName: user.name, action: 'create', module: 'purchases', referenceId: purchaseRef.id, description: `Created ${purchaseNumber} (${data.status})`, timestamp: firestore_1.FieldValue.serverTimestamp() });
+        return { id: purchaseRef.id, purchaseNumber, status: data.status, grandTotal };
+    });
+});
+exports.receivePurchase = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Sign in is required.');
+    const user = await operationalUser(request.auth.uid, ['admin', 'manager', 'inventory', 'accountant']), purchaseId = String(request.data?.purchaseId ?? '');
+    if (!purchaseId)
+        throw new https_1.HttpsError('invalid-argument', 'Purchase ID is required.');
+    return db.runTransaction(async (tx) => {
+        const purchaseRef = db.doc(`purchases/${purchaseId}`), purchaseSnap = await tx.get(purchaseRef);
+        if (!purchaseSnap.exists)
+            throw new https_1.HttpsError('not-found', 'Purchase not found.');
+        const purchase = purchaseSnap.data();
+        if (purchase.branchId !== user.branchId)
+            throw new https_1.HttpsError('permission-denied', 'Cross-branch purchase rejected.');
+        if (purchase.status === 'received')
+            return { id: purchaseId, purchaseNumber: purchase.purchaseNumber, status: 'received' };
+        if (purchase.status !== 'draft')
+            throw new https_1.HttpsError('failed-precondition', 'Only draft purchases can be received.');
+        const refs = purchase.items.map((item) => db.doc(`products/${item.productId}`)), snaps = await Promise.all(refs.map(ref => tx.get(ref))), productCache = new Map(snaps.map(s => [s.id, s.data()]));
+        if (purchase.supplierId) {
+            const supplierRef = db.doc(`suppliers/${purchase.supplierId}`), supplier = await tx.get(supplierRef);
+            if (!supplier.exists || supplier.data().branchId !== user.branchId)
+                throw new https_1.HttpsError('failed-precondition', 'Supplier unavailable.');
+            tx.update(supplierRef, { currentBalance: firestore_1.FieldValue.increment(purchase.grandTotal), updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        }
+        purchase.items.forEach((item, index) => { const snap = snaps[index]; if (!snap.exists)
+            throw new https_1.HttpsError('not-found', `${item.productName} no longer exists.`); const product = productCache.get(item.productId), before = item.variantId ? (product.variants ?? []).find((entry) => entry.id === item.variantId)?.stock ?? 0 : product.stock ?? 0; if (item.variantId) {
+            const variants = [...(product.variants ?? [])], variantIndex = variants.findIndex((entry) => entry.id === item.variantId);
+            if (variantIndex < 0)
+                throw new https_1.HttpsError('not-found', 'Product variant no longer exists.');
+            variants[variantIndex] = { ...variants[variantIndex], stock: before + item.quantity, buyingPrice: item.costPrice };
+            product.variants = variants;
+            const totalStock = (product.stock ?? 0) + item.quantity, newAverage = totalStock ? Math.round(((product.stock ?? 0) * (product.averageCost ?? product.buyingPrice ?? 0) + item.quantity * item.costPrice) / totalStock) : item.costPrice;
+            product.stock = totalStock;
+            product.averageCost = newAverage;
+            tx.update(refs[index], { variants, stock: totalStock, buyingPrice: item.costPrice, averageCost: newAverage, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+        }
+        else {
+            const after = before + item.quantity, newAverage = after ? Math.round((before * (product.averageCost ?? product.buyingPrice ?? 0) + item.quantity * item.costPrice) / after) : item.costPrice;
+            product.stock = after;
+            product.averageCost = newAverage;
+            tx.update(refs[index], { stock: after, buyingPrice: item.costPrice, averageCost: newAverage, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+        } tx.set(db.collection('stockMovements').doc(), { branchId: user.branchId, productId: item.productId, variantId: item.variantId ?? null, type: 'purchase', quantity: item.quantity, beforeStock: before, afterStock: before + item.quantity, referenceId: purchaseId, createdBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp() }); });
+        tx.update(purchaseRef, { status: 'received', receivedBy: request.auth.uid, receivedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid, updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        tx.set(db.collection('auditLogs').doc(), { branchId: user.branchId, userId: request.auth.uid, userName: user.name, action: 'receive', module: 'purchases', referenceId: purchaseId, description: `Received ${purchase.purchaseNumber}`, timestamp: firestore_1.FieldValue.serverTimestamp() });
+        return { id: purchaseId, purchaseNumber: purchase.purchaseNumber, status: 'received' };
+    });
+});
+exports.completePurchaseReturn = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Sign in is required.');
+    const user = await operationalUser(request.auth.uid, ['admin', 'manager', 'inventory', 'accountant']), data = request.data;
+    if (!data.purchaseId || !data.productId || !integer(data.quantity) || data.quantity < 1 || !data.reason?.trim())
+        throw new https_1.HttpsError('invalid-argument', 'Purchase return details are invalid.');
+    const year = new Date().getUTCFullYear();
+    return db.runTransaction(async (tx) => {
+        const purchaseRef = db.doc(`purchases/${data.purchaseId}`), productRef = db.doc(`products/${data.productId}`), counterRef = db.doc(`counters/purchase-return-${year}`), [purchaseSnap, productSnap, counterSnap] = await Promise.all([tx.get(purchaseRef), tx.get(productRef), tx.get(counterRef)]);
+        if (!purchaseSnap.exists || purchaseSnap.data().status !== 'received')
+            throw new https_1.HttpsError('failed-precondition', 'Only received purchases can be returned.');
+        if (!productSnap.exists)
+            throw new https_1.HttpsError('not-found', 'Product not found.');
+        const purchase = purchaseSnap.data(), product = productSnap.data();
+        if (purchase.branchId !== user.branchId || product.branchId !== user.branchId)
+            throw new https_1.HttpsError('permission-denied', 'Cross-branch return rejected.');
+        const purchased = purchase.items.filter((item) => item.productId === data.productId && (item.variantId ?? null) === (data.variantId ?? null)).reduce((sum, item) => sum + item.quantity, 0), previousQuery = db.collection('purchaseReturns').where('purchaseId', '==', data.purchaseId).where('productId', '==', data.productId).where('status', '==', 'completed'), previous = await tx.get(previousQuery), alreadyReturned = previous.docs.filter(item => (item.data().variantId ?? null) === (data.variantId ?? null)).reduce((sum, item) => sum + item.data().quantity, 0);
+        if (data.quantity > purchased - alreadyReturned)
+            throw new https_1.HttpsError('failed-precondition', 'Return quantity exceeds the remaining purchased quantity.');
+        const originalItems = purchase.items.filter((i) => i.productId === data.productId && (i.variantId || null) === (data.variantId || null)), originalTotal = originalItems.reduce((n, i) => n + i.lineTotal, 0), returnAmount = Math.round(originalTotal * (alreadyReturned + data.quantity) / purchased) - Math.round(originalTotal * alreadyReturned / purchased);
+        if (purchase.supplierId) {
+            const supplierRef = db.doc(`suppliers/${purchase.supplierId}`), supplier = await tx.get(supplierRef);
+            if (!supplier.exists || supplier.data().branchId !== user.branchId)
+                throw new https_1.HttpsError('failed-precondition', 'Supplier unavailable.');
+            tx.update(supplierRef, { currentBalance: firestore_1.FieldValue.increment(-returnAmount), updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        }
+        let before;
+        if (data.variantId) {
+            const variants = [...(product.variants ?? [])], index = variants.findIndex((entry) => entry.id === data.variantId);
+            if (index < 0)
+                throw new https_1.HttpsError('not-found', 'Variant not found.');
+            before = variants[index].stock;
+            if (before < data.quantity)
+                throw new https_1.HttpsError('failed-precondition', 'Insufficient current stock for this return.');
+            variants[index] = { ...variants[index], stock: before - data.quantity };
+            tx.update(productRef, { variants, stock: firestore_1.FieldValue.increment(-data.quantity), updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+        }
+        else {
+            before = product.stock ?? 0;
+            if (before < data.quantity)
+                throw new https_1.HttpsError('failed-precondition', 'Insufficient current stock for this return.');
+            tx.update(productRef, { stock: before - data.quantity, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+        }
+        const sequence = (counterSnap.data()?.value ?? 0) + 1, returnNumber = `PR-${year}-${String(sequence).padStart(6, '0')}`, returnRef = db.collection('purchaseReturns').doc();
+        tx.set(counterRef, { value: sequence, updatedAt: firestore_1.FieldValue.serverTimestamp() }, { merge: true });
+        tx.set(returnRef, { branchId: user.branchId, returnNumber, purchaseId: data.purchaseId, purchaseNumber: purchase.purchaseNumber, supplierId: purchase.supplierId ?? null, supplierName: purchase.supplierName, productId: data.productId, variantId: data.variantId ?? null, productName: product.name, sku: product.sku, quantity: data.quantity, amount: returnAmount, reason: data.reason.trim(), notes: data.notes?.trim() ?? '', returnDate: data.returnDate, status: 'completed', createdBy: request.auth.uid, updatedBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        tx.set(db.collection('stockMovements').doc(), { branchId: user.branchId, productId: data.productId, variantId: data.variantId ?? null, type: 'purchase-return', quantity: -data.quantity, beforeStock: before, afterStock: before - data.quantity, referenceId: returnRef.id, createdBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp() });
+        tx.set(db.collection('auditLogs').doc(), { branchId: user.branchId, userId: request.auth.uid, userName: user.name, action: 'create', module: 'purchase-returns', referenceId: returnRef.id, description: `Completed ${returnNumber}`, timestamp: firestore_1.FieldValue.serverTimestamp() });
+        return { id: returnRef.id, returnNumber };
+    });
+});
+var accounting_js_1 = require("./accounting.js");
+Object.defineProperty(exports, "completeSalesReturn", { enumerable: true, get: function () { return accounting_js_1.completeSalesReturn; } });
+Object.defineProperty(exports, "voidSale", { enumerable: true, get: function () { return accounting_js_1.voidSale; } });
+exports.closeCashShift = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => { if (!request.auth)
+    throw new https_1.HttpsError('unauthenticated', 'Sign in is required.'); const user = await operationalUser(request.auth.uid, ['admin', 'manager', 'accountant']), data = request.data; if (!data.date || !integer(data.openingCash) || data.openingCash < 0 || !integer(data.actualCash) || data.actualCash < 0)
+    throw new https_1.HttpsError('invalid-argument', 'Cash values are invalid.'); const existing = await db.collection('cashClosings').where('branchId', '==', user.branchId).where('date', '==', data.date).where('status', '==', 'closed').limit(1).get(); if (!existing.empty)
+    throw new https_1.HttpsError('already-exists', 'This branch already has a cash closing for the selected date.'); const [sales, payments, expenses, returns] = await Promise.all([db.collection('sales').where('branchId', '==', user.branchId).get(), db.collection('payments').where('branchId', '==', user.branchId).get(), db.collection('expenses').where('branchId', '==', user.branchId).get(), db.collection('salesReturns').where('branchId', '==', user.branchId).get()]), onDate = (row) => row.date === data.date || (row.createdAt?.toDate?.() && new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(row.createdAt.toDate()) === data.date), cashSales = sales.docs.filter(row => onDate(row.data()) && row.data().status !== 'voided').reduce((sum, row) => sum + (row.data().payments ?? []).filter((p) => p.method === 'cash').reduce((s, p) => s + p.amount, 0) - (row.data().change || 0), 0), cashCustomerPayments = payments.docs.filter(row => onDate(row.data()) && row.data().type === 'customer' && row.data().paymentMethod === 'cash').reduce((sum, row) => sum + row.data().amount, 0), cashExpenses = expenses.docs.filter(row => onDate(row.data()) && row.data().paymentMethod === 'cash' && row.data().status === 'active').reduce((sum, row) => sum + row.data().amount, 0), cashRefunds = returns.docs.filter(row => onDate(row.data()) && row.data().refundMethod === 'cash').reduce((sum, row) => sum + (row.data().refundAmount ?? row.data().total), 0), supplierCash = payments.docs.filter(row => onDate(row.data()) && row.data().type === 'supplier' && row.data().paymentMethod === 'cash').reduce((sum, row) => sum + row.data().amount, 0), expectedCash = data.openingCash + cashSales + cashCustomerPayments - cashExpenses - cashRefunds - supplierCash, difference = data.actualCash - expectedCash; if (difference !== 0 && (data.notes?.trim().length ?? 0) < 3)
+    throw new https_1.HttpsError('invalid-argument', 'A closing note is required when cash differs.'); const year = new Date().getUTCFullYear(), counterRef = db.doc(`counters/cash-closing-${year}`); return db.runTransaction(async (tx) => { const closingRef = db.doc(`cashClosings/${user.branchId}-${data.date}`); if ((await tx.get(closingRef)).exists)
+    throw new https_1.HttpsError('already-exists', 'Day already closed.'); const counter = await tx.get(counterRef), sequence = (counter.data()?.value ?? 0) + 1, closingNumber = `CC-${year}-${String(sequence).padStart(6, '0')}`, ref = closingRef; tx.set(counterRef, { value: sequence, updatedAt: firestore_1.FieldValue.serverTimestamp() }, { merge: true }); tx.set(ref, { branchId: user.branchId, closingNumber, date: data.date, openingCash: data.openingCash, cashSales, cashCustomerPayments, cashExpenses, cashRefunds, expectedCash, actualCash: data.actualCash, difference, notes: data.notes?.trim() ?? '', status: 'closed', closedBy: request.auth.uid, createdBy: request.auth.uid, updatedBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp() }); tx.set(db.collection('auditLogs').doc(), { branchId: user.branchId, userId: request.auth.uid, userName: user.name, action: 'CASH_CLOSE', module: 'cash-closing', referenceId: ref.id, description: `Closed ${closingNumber}`, timestamp: firestore_1.FieldValue.serverTimestamp() }); return { id: ref.id, closingNumber, expectedCash, difference }; }); });
+exports.recordAccountPayment = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Sign in is required.');
+    const user = await operationalUser(request.auth.uid, ['admin', 'manager', 'accountant']), data = request.data;
+    if (!['cash', 'card', 'bank', 'qr'].includes(data.paymentMethod) || !['customer', 'supplier', 'other'].includes(data.type) || !integer(data.amount) || data.amount <= 0 || !data.partyName?.trim() || !data.date)
+        throw new https_1.HttpsError('invalid-argument', 'Payment details are invalid.');
+    const year = new Date().getUTCFullYear();
+    return db.runTransaction(async (tx) => {
+        const counterRef = db.doc(`counters/payment-${year}`), counter = await tx.get(counterRef), sequence = (counter.data()?.value ?? 0) + 1, paymentNumber = `PAY-${year}-${String(sequence).padStart(6, '0')}`, paymentRef = db.collection('payments').doc();
+        if (data.type !== 'other') {
+            if (!data.partyId)
+                throw new https_1.HttpsError('invalid-argument', 'Select a customer or supplier.');
+            const collectionName = data.type === 'customer' ? 'customers' : 'suppliers', partyRef = db.doc(`${collectionName}/${data.partyId}`), partySnap = await tx.get(partyRef);
+            if (!partySnap.exists || partySnap.data().branchId !== user.branchId)
+                throw new https_1.HttpsError('not-found', 'Account not found in this branch.');
+            const party = partySnap.data(), balance = data.type === 'customer' ? (party.currentCredit ?? party.currentBalance ?? 0) : (party.currentBalance ?? 0);
+            if (data.amount > balance)
+                throw new https_1.HttpsError('failed-precondition', 'Payment exceeds the current outstanding balance.');
+            const remaining = balance - data.amount;
+            tx.update(partyRef, data.type === 'customer' ? { currentCredit: remaining, currentBalance: remaining, updatedBy: request.auth.uid, updatedAt: firestore_1.FieldValue.serverTimestamp() } : { currentBalance: remaining, updatedBy: request.auth.uid, updatedAt: firestore_1.FieldValue.serverTimestamp() });
+            tx.set(db.collection(data.type === 'customer' ? 'customerPayments' : 'supplierPayments').doc(), { branchId: user.branchId, paymentId: paymentRef.id, paymentNumber, [`${data.type}Id`]: data.partyId, amount: data.amount, paymentMethod: data.paymentMethod, reference: data.reference.trim(), date: data.date, notes: data.notes?.trim() ?? '', createdBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp() });
+        }
+        tx.set(counterRef, { value: sequence, updatedAt: firestore_1.FieldValue.serverTimestamp() }, { merge: true });
+        tx.set(paymentRef, { branchId: user.branchId, paymentNumber, type: data.type, [data.type === 'customer' ? 'customerId' : data.type === 'supplier' ? 'supplierId' : 'otherId']: data.partyId ?? null, partyName: data.partyName.trim(), amount: data.amount, paymentMethod: data.paymentMethod, reference: data.reference.trim(), date: data.date, notes: data.notes?.trim() ?? '', createdBy: request.auth.uid, updatedBy: request.auth.uid, createdAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp() });
+        tx.set(db.collection('auditLogs').doc(), { branchId: user.branchId, userId: request.auth.uid, userName: user.name, action: 'PAYMENT', module: 'payments', referenceId: paymentRef.id, description: `Recorded ${paymentNumber}`, timestamp: firestore_1.FieldValue.serverTimestamp() });
+        return { id: paymentRef.id, paymentNumber };
+    });
+});
+exports.saveStaff = (0, https_1.onCall)({ region: 'asia-south1' }, async (request) => { if (!request.auth)
+    throw new https_1.HttpsError('unauthenticated', 'Sign in is required.'); await operationalUser(request.auth.uid, ['admin']); const data = request.data; if (!data.name?.trim() || !data.email?.trim() || !['admin', 'manager', 'cashier', 'inventory', 'accountant'].includes(data.role) || !data.branchId)
+    throw new https_1.HttpsError('invalid-argument', 'Staff details are invalid.'); let uid = data.uid; if (!uid) {
+    if (!data.password || data.password.length < 6)
+        throw new https_1.HttpsError('invalid-argument', 'A password of at least 6 characters is required.');
+    uid = (await (0, auth_1.getAuth)().createUser({ email: data.email.trim(), password: data.password, displayName: data.name.trim(), disabled: data.status !== 'active' })).uid;
+}
+else
+    await (0, auth_1.getAuth)().updateUser(uid, { email: data.email.trim(), displayName: data.name.trim(), disabled: data.status !== 'active' }); await db.doc(`users/${uid}`).set({ uid, name: data.name.trim(), email: data.email.trim(), role: data.role, status: data.status, branchId: data.branchId, updatedAt: firestore_1.FieldValue.serverTimestamp(), updatedBy: request.auth.uid, ...(!data.uid ? { createdAt: firestore_1.FieldValue.serverTimestamp(), createdBy: request.auth.uid } : {}) }, { merge: true }); return { uid }; });
+exports.recordPayment = exports.recordAccountPayment;
+var expenses_js_1 = require("./expenses.js");
+Object.defineProperty(exports, "saveExpense", { enumerable: true, get: function () { return expenses_js_1.saveExpense; } });
+var products_js_1 = require("./products.js");
+Object.defineProperty(exports, "createProduct", { enumerable: true, get: function () { return products_js_1.createProduct; } });

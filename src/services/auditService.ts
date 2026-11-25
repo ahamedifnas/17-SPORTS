@@ -1,11 +1,27 @@
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore'
-import { requireDb } from '@/firebase/config'
-import { DEFAULT_BRANCH_ID } from '@/lib/utils'
+import { apiClient } from './apiClient'
 
-export interface AuditInput { userId: string; userName: string; action: string; module: string; referenceId?: string; description: string; branchId?: string }
+export interface AuditInput {
+  userId: string
+  userName: string
+  action: string
+  module: string
+  referenceId?: string
+  description: string
+  branchId: string
+}
 
 export const auditService = {
-  async record(input: AuditInput) {
-    await addDoc(collection(requireDb(), 'auditLogs'), { ...input, branchId: input.branchId ?? DEFAULT_BRANCH_ID, timestamp: serverTimestamp() })
+  async record(_input: AuditInput) {
+    // Audit logs are recorded authoritatively on the server during transaction operations
+  },
+
+  async list(module?: string) {
+    try {
+      const rows = await apiClient.get<unknown[]>('/audit-logs', module ? { module } : undefined)
+      if (Array.isArray(rows)) return rows
+    } catch {
+      // Ignored
+    }
+    return []
   },
 }

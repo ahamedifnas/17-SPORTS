@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; --background: 240 28% 9%; --foreground: 240 25% 96%; --card: 243 25% 17%; --card-foreground: 240 25% 96%; --primary: 269 95% 58%; --primary-foreground: 0 0% 100%; --muted: 243 22% 21%; --muted-foreground: 242 15% 72%; --border: 244 18% 28%; --input: 244 18% 32%; --ring: 269 95% 58%; --destructive: 0 72% 51%; --destructive-foreground: 0 0% 100%; }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-purple-500/30 selection:text-white;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  input, select, textarea {
+    color: inherit;
+  }
+
+  button:focus-visible, a:focus-visible {
+    outline: 2px solid #912DFA;
+    outline-offset: 2px;
+  }
+
+  /* Custom scrollbar for dark theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #11111E;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2b2a47;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #912DFA;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+}
+
+@media (max-width: 640px) {
+  input, select, textarea {
+    font-size: 16px !important;
+    min-height: 44px;
+  }
+  main {
+    overflow-x: hidden;
+  }
+}
+
+@layer base { body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; } h1,h2,h3 { font-family: inherit; } input, select, textarea { color: inherit; } button:focus-visible, a:focus-visible { outline: 2px solid #912DFA; outline-offset: 3px; } }
+@media(max-width:640px) { input,select,textarea { font-size:16px!important; min-height:44px; } main { overflow-x:hidden; } }

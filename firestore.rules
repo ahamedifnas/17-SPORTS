@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() { return signedIn() && profile().status == 'active'; }
+    function roleIs(role) { return active() && profile().role == role; }
+    function admin() { return roleIs('admin'); }
+    function manager() { return roleIs('manager'); }
+    function cashier() { return roleIs('cashier'); }
+    function inventory() { return roleIs('inventory'); }
+    function accountant() { return roleIs('accountant'); }
+    function management() { return admin() || manager(); }
+    function productStaff() { return management() || inventory(); }
+    function purchaseStaff() { return management() || inventory() || accountant(); }
+    function financeStaff() { return management() || accountant(); }
+    function sameBranch(data) { return active() && data.branchId == profile().branchId; }
+    function preservesOwnership() { return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['branchId','createdAt','createdBy']); }
+    match /users/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || admin();
+      allow create, delete: if admin();
+      allow update: if admin() || (request.auth.uid == uid && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role','status','branchId','uid']));
+    }
+    match /products/{id} {
+      allow read: if (productStaff() || accountant()) && sameBranch(resource.data);
+      allow create: if false;
+      allow update: if productStaff() && sameBranch(request.resource.data) && preservesOwnership() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['stock','variants','averageCost']);
+      allow delete: if false;
+    }
+    match /{catalog}/{id} {
+      allow read: if catalog in ['categories','brands'] && sameBranch(resource.data);
+      allow create: if catalog in ['categories','brands'] && productStaff() && sameBranch(request.resource.data);
+      allow update: if catalog in ['categories','brands'] && productStaff() && sameBranch(request.resource.data) && preservesOwnership();
+      allow delete: if catalog in ['categories','brands'] && productStaff() && sameBranch(resource.data);
+    }
+    match /customers/{id} {
+      allow read: if sameBranch(resource.data);
+      allow create: if (management() || cashier() || accountant()) && sameBranch(request.resource.data) && (financeStaff() || (request.resource.data.currentCredit == 0 && request.resource.data.currentBalance == 0 && request.resource.data.openingBalance == 0 && request.resource.data.creditLimit == 0));
+      allow update: if (management() || cashier() || accountant()) && sameBranch(request.resource.data) && preservesOwnership() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['currentBalance','currentCredit','openingBalance']) && (financeStaff() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['creditLimit']));
+      allow delete: if false;
+    }
+    match /suppliers/{id} {
+      allow read: if purchaseStaff() && sameBranch(resource.data);
+      allow create: if purchaseStaff() && sameBranch(request.resource.data);
+      allow update: if purchaseStaff() && sameBranch(request.resource.data) && preservesOwnership() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['currentBalance','openingBalance']);
+      allow delete: if false;
+    }
+    match /sales/{id} { allow read: if financeStaff() && sameBranch(resource.data); allow write: if false; }
+    match /purchases/{id} { allow read: if purchaseStaff() && sameBranch(resource.data); allow write: if false; }
+    match /purchaseItems/{id} { allow read: if purchaseStaff() && sameBranch(resource.data); allow write: if false; }
+    match /purchaseReturns/{id} { allow read: if purchaseStaff() && sameBranch(resource.data); allow write: if false; }
+    match /stockMovements/{id} { allow read: if productStaff() && sameBranch(resource.data); allow write: if false; }
+    match /stockAdjustments/{id} { allow read: if productStaff() && sameBranch(resource.data); allow write: if false; }
+    match /salesReturns/{id} { allow read: if sameBranch(resource.data); allow write: if false; }
+    match /salesReturnItems/{id} { allow read: if sameBranch(resource.data); allow write: if false; }
+    match /payments/{id} { allow read: if financeStaff() && sameBranch(resource.data); allow write: if false; }
+    match /customerPayments/{id} { allow read: if (financeStaff() || cashier()) && sameBranch(resource.data); allow write: if false; }
+    match /supplierPayments/{id} { allow read: if financeStaff() && sameBranch(resource.data); allow write: if false; }
+    match /customerTransactions/{id} { allow read: if (financeStaff() || cashier()) && sameBranch(resource.data); allow write: if false; }
+    match /supplierTransactions/{id} { allow read: if financeStaff() && sameBranch(resource.data); allow write: if false; }
+    match /expenses/{id} {
+      allow read: if financeStaff() && sameBranch(resource.data);
+      allow create, update: if false;
+      allow delete: if false;
+    }
+    match /cashClosings/{id} { allow read: if financeStaff() && sameBranch(resource.data); allow write: if false; }
+    match /auditLogs/{id} {
+      allow read: if (admin() || accountant()) && sameBranch(resource.data);
+      allow create: if sameBranch(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+    match /settings/{id} { allow read: if active(); allow write: if admin(); }
+    match /counters/{id} { allow read, write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

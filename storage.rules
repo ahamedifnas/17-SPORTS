@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function profile() { return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data; }
+    function active() { return request.auth != null && profile().status == 'active'; }
+    function elevated() { return active() && profile().role in ['admin','manager','inventory']; }
+    function validImage() { return request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/(jpeg|png|webp)'); }
+    match /products/{branchId}/{fileName} { allow read: if active() && branchId == profile().branchId; allow write: if elevated() && branchId == profile().branchId && validImage(); }
+    match /brands/{branchId}/{fileName} { allow read: if active() && branchId == profile().branchId; allow write: if elevated() && branchId == profile().branchId && validImage(); }
+    match /business/{fileName} { allow read: if active(); allow write: if elevated() && validImage(); }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}

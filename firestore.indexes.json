@@ -1,0 +1,23 @@
+{
+  "indexes": [
+    { "collectionGroup": "products", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "products", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "categories", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "categories", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "nameNormalized", "order": "ASCENDING" }] },
+    { "collectionGroup": "brands", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "brands", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "nameNormalized", "order": "ASCENDING" }] },
+    { "collectionGroup": "sales", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "purchases", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "purchaseReturns", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "purchaseReturns", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "purchaseId", "order": "ASCENDING" }, { "fieldPath": "productId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
+    { "collectionGroup": "stockMovements", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "productId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "auditLogs", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "timestamp", "order": "DESCENDING" }] },
+    { "collectionGroup": "customers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "suppliers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "expenses", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "date", "order": "DESCENDING" }] },
+    { "collectionGroup": "payments", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "salesReturns", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "cashClosings", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "branchId", "order": "ASCENDING" }, { "fieldPath": "date", "order": "DESCENDING" }] }
+  ],
+  "fieldOverrides": []
+}
